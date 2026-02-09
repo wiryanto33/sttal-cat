@@ -55,7 +55,7 @@ class AdminPanelProvider extends PanelProvider
         return $panel
             ->default()
             ->id('admin')
-            ->path('')
+            ->path('/admin')
             ->when($this->settings->login_enabled ?? true, fn($panel) => $panel->login(Login::class))
             ->when($this->settings->registration_enabled ?? true, fn($panel) => $panel->registration())
             ->when($this->settings->password_reset_enabled ?? true, fn($panel) => $panel->passwordReset())
@@ -85,6 +85,18 @@ class AdminPanelProvider extends PanelProvider
                 DispatchServingFilamentEvent::class,
             ])
             ->sidebarCollapsibleOnDesktop(true)
+            ->navigationGroups([
+                // You can list other groups here in the order you want them to appear.
+                // Use keys for stable ordering when groups are strings or NavigationGroup instances.
+                // Keep Settings last so it renders at the bottom of the sidebar.
+                'Dashboard',
+                'Data Master',
+                'Management dan Monitoring Ujian',
+                'Setting Content Landing Page',
+                'Filament Shield',
+                'Settings',
+                'User'
+            ])
             ->authMiddleware([
                 Authenticate::class,
             ])

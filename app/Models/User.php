@@ -29,6 +29,7 @@ class User extends Authenticatable implements FilamentUser, HasAvatar, MustVerif
     protected $fillable = [
         'name',
         'email',
+        'username',
         'password',
         'avatar_url',
     ];
@@ -82,5 +83,11 @@ class User extends Authenticatable implements FilamentUser, HasAvatar, MustVerif
     public function canAccessPanel(Panel $panel): bool
     {
         return true;
+    }
+
+    // Relasi ke Data Peserta
+    public function candidate()
+    {
+        return $this->hasOne(Candidate::class);
     }
 }
