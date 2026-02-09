@@ -14,7 +14,7 @@
 
                     {{-- JUDUL APLIKASI --}}
                     <div class="flex flex-col">
-                        <span class="font-bold tracking-wider text-lg leading-tight">CBT DASHBOARD</span>
+                        <span class="font-bold tracking-wider text-lg leading-tight">CAT DASHBOARD</span>
                         <span
                             class="text-[10px] text-yellow-500 font-semibold tracking-widest uppercase opacity-80 hidden md:block">
                             Sekolah Tinggi Teknologi Angkatan Laut
@@ -194,7 +194,7 @@
     </main>
 
     <footer class="bg-white border-t py-6 text-center text-slate-400 text-sm">
-        &copy; 2026 STTAL CBT System.
+        &copy; 2026 STTAL CAT System.
     </footer>
 
     {{-- ========================================== --}}

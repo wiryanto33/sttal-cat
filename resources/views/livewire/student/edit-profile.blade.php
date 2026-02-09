@@ -21,7 +21,7 @@
                         </span>
                         <span
                             class="text-[10px] text-yellow-500 font-semibold tracking-widest uppercase opacity-80 hidden md:block">
-                            {{ $siteSetting->site_name ?? 'CBT System' }}
+                            {{ $siteSetting->site_name ?? 'CAT System' }}
                         </span>
                     </div>
                 </div>
@@ -223,6 +223,6 @@
     </main>
 
     <footer class="bg-white border-t py-6 text-center text-slate-400 text-sm">
-        &copy; 2026 STTAL CBT System.
+        &copy; 2026 STTAL CAT System.
     </footer>
 </div>
