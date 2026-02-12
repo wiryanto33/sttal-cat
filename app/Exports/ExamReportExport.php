@@ -16,8 +16,8 @@ class ExamReportExport implements FromCollection, WithHeadings, WithMapping, Wit
 
     public function collection()
     {
-        // Ambil data yang selesai, urutkan berdasarkan Strata, Prodi, lalu Nilai Tertinggi
-        $this->results = ExamSession::with(['candidate.user', 'candidate.strata', 'candidate.prodi1'])
+        // 1. Tambahkan eager loading 'examPacket' agar tidak berat saat proses
+        $this->results = ExamSession::with(['candidate.user', 'candidate.strata', 'candidate.prodi1', 'examPacket'])
             ->where('status', 3)
             ->where('is_disqualified', false)
             ->get()
@@ -32,9 +32,11 @@ class ExamReportExport implements FromCollection, WithHeadings, WithMapping, Wit
 
     public function headings(): array
     {
+        // 2. Tambahkan kolom "PAKET UJIAN" di posisi yang sesuai (contoh setelah Prodi)
         return [
             "STRATA",
             "PRODI PILIHAN 1",
+            "PAKET UJIAN",
             "NAMA PESERTA",
             "PANGKAT",
             "KORPS",
@@ -48,11 +50,13 @@ class ExamReportExport implements FromCollection, WithHeadings, WithMapping, Wit
 
     public function map($row): array
     {
+        // 3. Masukkan data Paket Ujian ke dalam array mapping
         return [
             $row->candidate->strata->name ?? '-',
             $row->candidate->prodi1->name ?? '-',
+            $row->examPacket->title ?? '-', // Mengambil judul paket ujian
             $row->candidate->user->name ?? '-',
-            $row->candidate->pangkat ?? '-', // Memperbaiki typo pangkkat
+            $row->candidate->pangkat ?? '-',
             $row->candidate->korps ?? '-',
             $row->candidate->nrp ?? '-',
             $row->candidate->satuan ?? '-',
@@ -64,8 +68,8 @@ class ExamReportExport implements FromCollection, WithHeadings, WithMapping, Wit
 
     public function styles(Worksheet $sheet)
     {
-        // Tebalkan Header (A1 sampai J1 karena sekarang ada 10 kolom)
-        $sheet->getStyle('A1:J1')->getFont()->setBold(true);
+        // 4. Update range style karena kolom bertambah menjadi A sampai K (11 kolom)
+        $sheet->getStyle('A1:K1')->getFont()->setBold(true);
 
         $data = $this->results->values();
         $grouped = $this->results->groupBy('candidate.prodi_1_id');
@@ -78,22 +82,22 @@ class ExamReportExport implements FromCollection, WithHeadings, WithMapping, Wit
                 if ($row->candidate->prodi_1_id == $prodiId) {
                     $rowNumber = $index + 2;
 
-                    // Highlight Hijau untuk Nilai Tertinggi di Prodi tersebut
+                    // Highlight Hijau untuk Nilai Tertinggi
                     if ($row->total_score == $maxScore && $sessions->count() > 1) {
-                        $sheet->getStyle("A{$rowNumber}:J{$rowNumber}")->getFill()
+                        $sheet->getStyle("A{$rowNumber}:K{$rowNumber}")->getFill()
                             ->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('C6EFCE');
                     }
-                    // Highlight Merah untuk Nilai Terendah di Prodi tersebut
+                    // Highlight Merah untuk Nilai Terendah
                     elseif ($row->total_score == $minScore && $sessions->count() > 1) {
-                        $sheet->getStyle("A{$rowNumber}:J{$rowNumber}")->getFill()
+                        $sheet->getStyle("A{$rowNumber}:K{$rowNumber}")->getFill()
                             ->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFC7CE');
                     }
                 }
             }
         }
 
-        // Otomatis atur lebar kolom agar rapi
-        foreach (range('A', 'J') as $columnID) {
+        // Otomatis atur lebar kolom dari A sampai K
+        foreach (range('A', 'K') as $columnID) {
             $sheet->getColumnDimension($columnID)->setAutoSize(true);
         }
     }
