@@ -33,7 +33,7 @@ class ExamReportResource extends Resource
             ->groups([
                 Tables\Grouping\Group::make('candidate.strata.name')
                     ->label('Strata')
-                    ->collapsible()  ,
+                    ->collapsible(),
                 Tables\Grouping\Group::make('candidate.prodi1.name')
                     ->label('Program Studi')
                     ->collapsible(),
@@ -50,23 +50,33 @@ class ExamReportResource extends Resource
             ->defaultGroup('candidate.user.name')
 
             ->columns([
-            Tables\Columns\TextColumn::make('examPacket.title')
-                ->label('Mata Ujian / Peserta')
-                ->weight('bold')
-                ->description(
-                    fn($record) =>
-                    // Baris 1: Nama, Pangkat, Korps, NRP
-                    strtoupper($record->candidate->user->name ?? '-') . " | " .
-                        ($record->candidate->pangkat ?? '-') . " " . ($record->candidate->korps ?? '-') .
-                        " (" . ($record->candidate->nrp ?? '-') . ") " .
+                Tables\Columns\TextColumn::make('examPacket.title')
+                    ->label('Mata Ujian / Peserta')
+                    ->weight('bold')
+                    ->description(
+                        fn($record) =>
+                        strtoupper($record->candidate->user->name ?? '-') . " | " .
+                            ($record->candidate->pangkat ?? '-') . " " . ($record->candidate->korps ?? '-') .
+                            " (" . ($record->candidate->nrp ?? '-') . ") " .
+                            "\n Diselesaikan pada: " . ($record->end_time?->format('d/m/Y H:i') ?? '-')
+                    )
+                    ->wrap()
+                    /* PERBAIKAN SEARCHABLE:
+       Gunakan prefix tabel jika perlu, atau pastikan path relasi benar.
+       Filament akan menangani Join secara otomatis.
+    */
+                    ->searchable(query: function (Builder $query, string $search): Builder {
+                        return $query->whereHas('candidate.user', function (Builder $q) use ($search) {
+                            $q->where('name', 'like', "%{$search}%");
+                        })->orWhereHas('candidate', function (Builder $q) use ($search) {
+                            $q->where('nrp', 'like', "%{$search}%")
+                                ->orWhere('pangkat', 'like', "%{$search}%");
+                        })->orWhereHas('examPacket', function (Builder $q) use ($search) {
+                            $q->where('title', 'like', "%{$search}%");
+                        });
+                    }), // Agar tetap bisa dicari via kolom ini
 
-                        // Baris 2: Waktu Selesai
-                        "\n Diselesaikan pada: " . ($record->end_time?->format('d/m/Y H:i') ?? '-')
-                )
-                ->wrap() // Memastikan teks turun ke bawah jika terlalu panjang
-                ->searchable(['candidate.user.name', 'candidate.nrp']), // Agar tetap bisa dicari via kolom ini
-
-            TextColumn::make('score_tpa_aggregate')
+                TextColumn::make('score_tpa_aggregate')
                     ->label('Skor PG')
                     ->alignCenter()
                     ->badge()
