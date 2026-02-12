@@ -2,123 +2,135 @@
 
 namespace App\Livewire\Student;
 
-use Livewire\Component;
+use App\Models\ExamAnswer;
 use App\Models\ExamPacket;
 use App\Models\ExamSession;
-use App\Models\ExamAnswer;
+use App\Models\ExamViolation;
 use App\Models\Question;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
-use Carbon\Carbon;
+use Livewire\Component;
 
 class ExamPage extends Component
 {
     public $packet;
     public $session;
     public $remainingTime;
-
     public $questionIds = [];
     public $currentQuestionIndex = 0;
     public $answers = [];
-
-    protected $listeners = ['timerExpired' => 'finishExam'];
 
     public function mount($packetId)
     {
         $user = Auth::user();
         if (!$user || !$user->candidate) {
-            return redirect()->route('student.dashboard')->with('error', 'Profil tidak ditemukan.');
+            return redirect()->route('student.dashboard');
         }
 
         $this->packet = ExamPacket::findOrFail($packetId);
-
-        // Ambil ID soal urut dari ID terkecil
         $this->questionIds = $this->packet->questions()->orderBy('id')->pluck('id')->toArray();
 
-        if (empty($this->questionIds)) {
-            return redirect()->route('student.dashboard')->with('error', 'Paket soal kosong.');
-        }
-
-        // Buat atau Ambil Sesi Ujian
         $this->session = ExamSession::firstOrCreate(
             ['candidate_id' => $user->candidate->id, 'exam_packet_id' => $this->packet->id],
-            [
-                'status' => ExamSession::STATUS_ONGOING,
-                'start_time' => now(),
-                'total_score' => 0
-            ]
+            ['status' => ExamSession::STATUS_ONGOING, 'start_time' => now()]
         );
 
-        // Jika status sudah selesai (2 atau 3), tendang keluar
-        if ($this->session->status >= 2) {
-            return redirect()->route('student.dashboard')->with('error', 'Anda sudah menyelesaikan ujian ini.');
+        // Keamanan: Jika sudah diskualifikasi atau selesai, tendang keluar
+        if ($this->session->is_disqualified || $this->session->status >= 2) {
+            return redirect()->route('student.dashboard')->with('error', 'Akses ujian ditutup.');
         }
 
-        // Load Jawaban Lokal
-        $this->answers = ExamAnswer::where('exam_session_id', $this->session->id)
-            ->pluck('answer', 'question_id')
-            ->toArray();
+        $this->answers = ExamAnswer::where('exam_session_id', $this->session->id)->pluck('answer', 'question_id')->toArray();
 
-        // 2. LOGIKA ANTI-RESET (PENTING!)
-        // Hitung durasi berdasarkan Waktu Mulai di Database vs Waktu Sekarang
-
-        $durasiMenit = $this->packet->duration_minutes ?? 90;
-        $jatahDetik = $durasiMenit * 60;
-
-        // Pastikan start_time dibaca sebagai Carbon Object
-        $waktuMulai = Carbon::parse($this->session->start_time);
-
-        // Sudah berjalan berapa detik sejak klik mulai pertama kali?
-        $detikBerjalan = now()->diffInSeconds($waktuMulai);
-
-        // Sisa Waktu = Jatah - Berjalan
-        // (int) memaksa jadi angka bulat agar JS tidak bingung
-        $this->remainingTime = (int) max(0, $jatahDetik - $detikBerjalan);
+        $durasiDetik = ($this->packet->duration_minutes ?? 90) * 60;
+        $detikBerjalan = now()->diffInSeconds(Carbon::parse($this->session->start_time));
+        $this->remainingTime = (int) max(0, $durasiDetik - $detikBerjalan);
     }
 
-    #[Computed]
-    public function currentQuestion()
+    // --- LOGIKA PELANGGARAN (PROCTORING) ---
+    public function handleViolation($type, $description)
     {
-        $currentId = $this->questionIds[$this->currentQuestionIndex] ?? null;
-        return $currentId ? Question::find($currentId) : null;
+        // Jika sudah diskualifikasi sebelumnya, langsung lempar ke dashboard
+        if ($this->session->is_disqualified) {
+            return $this->autoSubmitViolation();
+        }
+
+        if ($this->session->status !== 1) {
+            return;
+        }
+
+        // 1. Catat Log ke Database
+        ExamViolation::create([
+            'exam_session_id' => $this->session->id,
+            'violation_type' => $type,
+            'description' => $description,
+            'detected_at' => now(),
+        ]);
+
+        // 2. Hitung jumlah pelanggaran REAL-TIME
+        $count = ExamViolation::where('exam_session_id', $this->session->id)->count();
+
+        // 3. Logika Diskualifikasi (Pelanggaran ke-4)
+        if ($count >= 4) {
+            $this->session->update([
+                'is_disqualified' => true,
+                'disqualification_reason' => "Otomatis: Melakukan $count jenis pelanggaran.",
+                'status' => ExamSession::STATUS_WAITING_CORRECTION, // Kunci status
+                'end_time' => now()
+            ]);
+            return $this->autoSubmitViolation();
+        }
+
+        // 4. Kirim Peringatan ke Browser (Peringatan 1, 2, atau 3)
+        $this->dispatch('show-proctor-warning', [
+            'count' => $count,
+            'message' => "Sistem mendeteksi tindakan: " . str_replace('_', ' ', strtoupper($type)),
+            'is_critical' => ($count == 3)
+        ]);
     }
 
+    public function autoSubmitViolation()
+    {
+        // Hitung skor sementara yang sudah masuk (agar tidak 0 jika sudah dikerjakan sebagian)
+        $nilaiPG = ExamAnswer::where('exam_session_id', $this->session->id)
+            ->whereHas('question', fn($q) => $q->where('type', 'multiple_choice'))
+            ->sum('score');
+
+        $this->session->update(['total_score' => $nilaiPG]);
+
+        $this->dispatch('force-redirect', url: route('student.dashboard'));
+    }
+
+    // --- NAVIGASI DENGAN GUARD ---
     public function nextQuestion()
     {
-        if ($this->currentQuestionIndex < count($this->questionIds) - 1) {
-            $this->currentQuestionIndex++;
-        }
-    }
-
-    public function prevQuestion()
-    {
-        if ($this->currentQuestionIndex > 0) {
-            $this->currentQuestionIndex--;
-        }
+        if ($this->session->is_disqualified) return $this->autoSubmitViolation();
+        if ($this->currentQuestionIndex < count($this->questionIds) - 1) $this->currentQuestionIndex++;
     }
 
     public function goToQuestion($index)
     {
-        if (isset($this->questionIds[$index])) {
+        // Cek apakah index valid dan session masih aktif
+        if (isset($this->questionIds[$index]) && !$this->session->is_disqualified) {
             $this->currentQuestionIndex = $index;
+
+            // Opsional: Paksa render ulang untuk memastikan Computed Property terpanggil
+            $this->dispatch('question-changed');
         }
     }
 
     public function saveAnswer($questionId, $answer)
     {
+        if ($this->session->is_disqualified || $this->session->status >= 2) return;
+
         $this->answers[$questionId] = $answer;
-
         $question = Question::find($questionId);
-        if (!$question) return;
 
-        // Auto-grade jika Pilihan Ganda
         $isCorrect = false;
         $score = 0;
-
-        if ($question->type === 'multiple_choice') {
-            $key = strtoupper(trim($question->correct_answer));
-            $ans = strtoupper(trim($answer));
-            $isCorrect = ($key === $ans);
+        if ($question && $question->type === 'multiple_choice') {
+            $isCorrect = (strtoupper(trim($question->correct_answer)) === strtoupper(trim($answer)));
             $score = $isCorrect ? ($question->weight ?? 1) : 0;
         }
 
@@ -128,49 +140,55 @@ class ExamPage extends Component
         );
     }
 
-    public function finishExam()
+    #[Computed]
+    public function currentQuestion()
     {
-        // 1. Cek Apakah ada soal ESSAY di paket ini?
-        $hasEssay = $this->packet->questions()->where('type', 'essay')->exists();
+        // Ambil ID soal berdasarkan index saat ini
+        $currentId = $this->questionIds[$this->currentQuestionIndex] ?? null;
 
-        // 2. Hitung Nilai Pilihan Ganda (TPA) yang sudah pasti
-        $nilaiMultipleChoice = ExamAnswer::where('exam_session_id', $this->session->id)
-            ->whereHas('question', fn($q) => $q->where('type', 'multiple_choice'))
-            ->sum('score');
-
-        // 3. Tentukan Status & Nilai Akhir
-        if ($hasEssay) {
-            // KASUS CAMPURAN (PG + ESSAY)
-            // Nilai Essay masih 0 (karena belum dikoreksi admin)
-            // Status jadi "Menunggu Koreksi"
-
-            $this->session->update([
-                'status' => ExamSession::STATUS_WAITING_CORRECTION, // Status 2
-                'end_time' => now(),
-                'score_tpa_aggregate' => $nilaiMultipleChoice, // Simpan nilai PG
-                'score_essay_aggregate' => 0, // Belum ada nilai
-                'total_score' => $nilaiMultipleChoice // Total sementara (cuma PG)
-            ]);
-
-            $pesan = 'Ujian selesai. Jawaban Essay Anda akan diperiksa oleh penguji.';
-
-        } else {
-            // KASUS FULL PILIHAN GANDA
-            // Nilai langsung FINAL
-
-            $this->session->update([
-                'status' => ExamSession::STATUS_FINISHED, // Status 3 (Final)
-                'end_time' => now(),
-                'score_tpa_aggregate' => $nilaiMultipleChoice,
-                'score_essay_aggregate' => 0,
-                'total_score' => $nilaiMultipleChoice
-            ]);
-
-            $pesan = 'Ujian selesai. Nilai Akhir Anda: ' . $nilaiMultipleChoice;
+        if (! $currentId) {
+            return null;
         }
 
-        session()->flash('success', $pesan);
-        return redirect()->route('student.dashboard');
+        return Question::find($currentId);
+    }
+
+    public function finishExam()
+    {
+        // Jika sudah pernah diproses, jangan jalankan lagi (mencegah error ganda)
+        if ($this->session->status >= 2 && !$this->session->is_disqualified) {
+            return redirect()->route('student.dashboard');
+        }
+
+        try {
+            // 1. Cek Apakah ada soal ESSAY di paket ini?
+            $hasEssay = $this->packet->questions()->where('type', 'essay')->exists();
+
+            // 2. Hitung Nilai Pilihan Ganda (TPA) yang sudah pasti
+            $nilaiMultipleChoice = ExamAnswer::where('exam_session_id', $this->session->id)
+                ->whereHas('question', fn($q) => $q->where('type', 'multiple_choice'))
+                ->sum('score');
+
+            // 3. Update Sesi Ujian (Gunakan update tunggal agar atomik)
+            $newStatus = $hasEssay ? ExamSession::STATUS_WAITING_CORRECTION : ExamSession::STATUS_FINISHED;
+
+            $this->session->update([
+                'status' => $newStatus,
+                'end_time' => now(),
+                'score_tpa_aggregate' => $nilaiMultipleChoice,
+                'total_score' => $nilaiPG ?? $nilaiMultipleChoice, // Gunakan nilai yang ada
+            ]);
+
+            $pesan = $hasEssay
+                ? 'Ujian selesai. Jawaban Essay Anda akan diperiksa oleh penguji.'
+                : 'Ujian selesai. Nilai Akhir Anda: ' . $nilaiMultipleChoice;
+
+            session()->flash('success', $pesan);
+            return redirect()->route('student.dashboard');
+        } catch (\Exception $e) {
+            // Jika ada error saat simpan, tetap lempar ke dashboard agar user tidak stuck
+            return redirect()->route('student.dashboard')->with('error', 'Terjadi masalah saat menyimpan, namun jawaban Anda sudah aman.');
+        }
     }
 
     public function render()

@@ -22,6 +22,9 @@ return new class extends Migration
             // Status: 0 (Merah), 1 (Kuning), 2 (Hijau)
             $table->integer('status')->default(0);
 
+            $table->boolean('is_disqualified')->default(false);
+            $table->text('disqualification_reason')->nullable();
+
             $table->decimal('total_score', 10, 2)->default(0)->nullable();
 
             // --- DETAIL NILAI UTAMA ---

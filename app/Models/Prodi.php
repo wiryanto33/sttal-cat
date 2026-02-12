@@ -19,4 +19,11 @@ class Prodi extends Model
     {
         return $this->belongsTo(Strata::class);
     }
+
+    public function candidates()
+    {
+        // Karena di tabel candidates kolomnya adalah prodi_1_id atau prodi_2_id
+        // Kita arahkan ke prodi_1_id sesuai permintaan Anda (Pilihan Pertama)
+        return $this->hasMany(Candidate::class, 'prodi_1_id');
+    }
 }

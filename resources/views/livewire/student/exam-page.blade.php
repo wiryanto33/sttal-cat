@@ -126,14 +126,26 @@
                             $isActive = $index === $currentQuestionIndex;
                         @endphp
 
-                        <button wire:click="goToQuestion({{ $index }})"
+                        <button wire:click="goToQuestion({{ $index }})" wire:key="nav-item-{{ $qId }}"
+                            {{-- Perbaikan Utama: Tambahkan wire:key --}} wire:loading.attr="disabled" {{-- Cegah klik ganda saat loading --}}
                             class="aspect-square rounded-lg font-bold text-sm flex items-center justify-center transition border-2
-                            {{ $isActive
-                                ? 'bg-blue-600 text-white border-blue-600 scale-110 shadow-md ring-2 ring-blue-200'
-                                : ($isAnswered
-                                    ? 'bg-green-100 text-green-700 border-green-200 hover:border-green-400'
-                                    : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600') }}">
-                            {{ $index + 1 }}
+    {{ $isActive
+        ? 'bg-blue-600 text-white border-blue-600 scale-110 shadow-md ring-2 ring-blue-200'
+        : ($isAnswered
+            ? 'bg-green-100 text-green-700 border-green-200 hover:border-green-400'
+            : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600') }}">
+                            {{-- Tampilkan spinner kecil saat navigasi diklik agar user tahu proses sedang berjalan --}}
+                            <span wire:loading.remove wire:target="goToQuestion({{ $index }})">
+                                {{ $index + 1 }}
+                            </span>
+                            <span wire:loading wire:target="goToQuestion({{ $index }})">
+                                <svg class="animate-spin h-4 w-4 text-white" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10"
+                                        stroke="currentColor" stroke-width="4" fill="none"></circle>
+                                    <path class="opacity-75" fill="currentColor"
+                                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                            </span>
                         </button>
                     @endforeach
                 </div>
@@ -157,6 +169,95 @@
         // --- 1. GLOBAL VARIABLES ---
         let examFinished = false;
 
+        // --- PROCTORING SCRIPT ---
+        (function proctoring() {
+            const report = (type, desc) => {
+                if (examFinished) return;
+                // Tampilkan loading sebentar agar user tidak bisa klik tombol lain saat server proses
+                Swal.showLoading();
+                @this.call('handleViolation', type, desc);
+            };
+
+            // 1. Tab & Window Focus
+            window.addEventListener('blur', () => report('focus_loss', 'Meninggalkan jendela ujian'));
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') report('tab_switch', 'Pindah tab browser');
+            });
+
+            // 2. Anti Copy
+            document.addEventListener('copy', (e) => {
+                e.preventDefault();
+                report('copy_attempt', 'Mencoba copy soal');
+            });
+
+            // 3. Anti Klik Kanan
+            document.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                report('right_click', 'Klik kanan dilarang');
+            });
+
+            // 4. Anti DevTools & 7. Anti Print
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+                    e.preventDefault();
+                    report('dev_tools', 'Membuka inspeksi elemen');
+                }
+                if (e.ctrlKey && e.key === 'p') {
+                    e.preventDefault();
+                    report('print_attempt', 'Mencoba mencetak soal');
+                }
+            });
+
+            // 6. Anti Paste
+            document.addEventListener('paste', (e) => {
+                e.preventDefault();
+                report('paste_attempt', 'Paste dilarang');
+            });
+
+            // 8. Screenshot (PrintScreen)
+            document.addEventListener('keyup', (e) => {
+                if (e.key === 'PrintScreen') {
+                    navigator.clipboard.writeText("");
+                    report('screenshot_attempt', 'Mencoba screenshot');
+                }
+            });
+
+            // 9. Fullscreen Change
+            document.addEventListener('fullscreenchange', () => {
+                if (!document.fullscreenElement && !examFinished) {
+                    report('fullscreen_exit', 'Keluar dari mode layar penuh');
+                }
+            });
+        })();
+
+        // --- LISTENERS DARI LIVEWIRE ---
+
+        // Peringatan Pelanggaran (1, 2, 3)
+        window.addEventListener('show-proctor-warning', event => {
+            const data = event.detail[0];
+            Swal.fire({
+                title: data.is_critical ? 'PERINGATAN KRITIS!' : 'Peringatan!',
+                html: `<p>${data.message}</p><br><b class="text-2xl text-red-600">Pelanggaran: ${data.count} / 3</b>`,
+                icon: data.is_critical ? 'error' : 'warning',
+                confirmButtonText: 'Saya Mengerti & Lanjutkan',
+                allowOutsideClick: false
+            });
+        });
+
+        // Pengalihan Paksa (Pelanggaran ke-4)
+        window.addEventListener('force-redirect', event => {
+            examFinished = true;
+            Swal.fire({
+                title: 'DISKUALIFIKASI!',
+                text: 'Batas pelanggaran terlampaui. Ujian dihentikan.',
+                icon: 'error',
+                confirmButtonText: 'Kembali ke Dashboard',
+                allowOutsideClick: false
+            }).then(() => {
+                window.location.href = event.detail.url;
+            });
+        });
+
         // --- 2. KONFIRMASI SELESAI ---
         function confirmFinish() {
             Swal.fire({
@@ -171,6 +272,7 @@
             }).then((result) => {
                 if (result.isConfirmed) {
                     examFinished = true;
+                    Swal.showLoading();
                     @this.call('finishExam');
                 }
             })

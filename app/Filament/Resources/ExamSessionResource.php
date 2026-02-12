@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\ExamSessionResource\Pages;
 use App\Models\ExamSession;
+use App\Models\ExamAnswer;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Radio;
@@ -12,8 +13,10 @@ use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Filament\Tables\Grouping\Group;
 use Illuminate\Support\HtmlString;
 use Filament\Forms\ComponentContainer;
 use Filament\Notifications\Notification;
@@ -24,9 +27,8 @@ class ExamSessionResource extends Resource
     protected static ?string $navigationIcon = 'heroicon-o-computer-desktop';
     protected static ?string $navigationLabel = 'Monitoring Ujian';
     protected static ?string $navigationGroup = 'Management dan Monitoring Ujian';
-
-    protected static ?string $modelLabel = 'Monitoring Ujian Calon Mahasiswa Baru';
-    protected static ?string $pluralModelLabel = 'Monitoring Ujian Calon Mahasiswa Baru';
+    protected static ?string $modelLabel = 'Monitoring Ujian';
+    protected static ?string $pluralModelLabel = 'Monitoring Ujian';
 
     public static function canCreate(): bool
     {
@@ -41,32 +43,23 @@ class ExamSessionResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
-            ->poll('5s')
-            // 1. TAMBAHKAN GROUPING DI SINI
+            ->poll('5s') // Auto-refresh setiap 5 detik untuk monitoring real-time
             ->groups([
-                Tables\Grouping\Group::make('candidate.user.name')
+                Group::make('candidate.user.name')
                     ->label('Nama Peserta')
                     ->collapsible()
                     ->titlePrefixedWithLabel(false)
                     ->getTitleFromRecordUsing(
                         fn($record) =>
-                        // Format: Nama - Pangkat Korps (NRP: xxx)
-                        $record->candidate->user->name . ' — ' .
-                            $record->candidate->pangkat . ' ' .
-                            $record->candidate->korps . ' (NRP: ' .
-                            $record->candidate->nrp . ')'
+                        "{$record->candidate->user->name} — {$record->candidate->pangkat} {$record->candidate->korps} (NRP: {$record->candidate->nrp})"
                     ),
             ])
-            ->defaultGroup('candidate.user.name') // Grouping aktif secara default
-            // -----------------------------
-
+            ->defaultGroup('candidate.user.name')
             ->columns([
-                // 2. HAPUS/SEMBUNYIKAN KOLOM NAMA PESERTA
-                // (Karena namanya sudah muncul di Header Group, kita sembunyikan kolom ini agar tidak duplikat)
                 TextColumn::make('candidate.user.name')
                     ->label('Nama Peserta')
                     ->searchable()
-                    ->toggleable(isToggledHiddenByDefault: true), // Sembunyikan by default
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 TextColumn::make('examPacket.title')
                     ->label('Paket Ujian')
@@ -74,63 +67,90 @@ class ExamSessionResource extends Resource
                     ->color('primary')
                     ->limit(30),
 
-                // KOLOM STATUS
                 TextColumn::make('status')
                     ->label('Status')
                     ->badge()
                     ->formatStateUsing(fn($state) => match ($state) {
                         0 => 'Belum Mulai',
-                        1 => 'Sedang Mengerjakan',
-                        2 => 'Menunggu Koreksi',
+                        1 => 'Mengerjakan',
+                        2 => 'Perlu Koreksi',
                         3 => 'Selesai',
+                        default => 'Unknown',
                     })
                     ->color(fn($state) => match ($state) {
-                        1 => 'warning',
-                        2 => 'danger',
+                        1 => 'info',
+                        2 => 'warning',
                         3 => 'success',
                         default => 'gray',
                     }),
 
-                TextColumn::make('score_tpa_aggregate')
-                    ->label('Nilai PG')
-                    ->numeric(2)
-                    ->alignCenter(),
+                TextColumn::make('violations_count')
+                    ->label('Pelanggaran')
+                    ->counts('violations')
+                    ->badge()
+                    ->color(fn($state) => match (true) {
+                        $state >= 4 => 'danger',
+                        $state >= 1 => 'warning',
+                        default => 'success',
+                    })
+                    ->formatStateUsing(fn($state) => $state . ' Log')
+                    ->sortable(),
 
-                TextColumn::make('score_essay_aggregate')
-                    ->label('Nilai Essay')
-                    ->numeric(2)
-                    ->placeholder('-')
-                    ->alignCenter(),
+                Tables\Columns\IconColumn::make('is_disqualified')
+                    ->label('Status Diskualifikasi')
+                    // Jangan gunakan ->boolean() karena akan memaksa true = hijau
+                    ->icon(fn($state): string => $state ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle')
+                    ->color(fn($state) => ($state === true || $state === 1) ? 'danger' : 'success')
+                    ->alignCenter()
+                    ->tooltip(fn($record) => $record->disqualification_reason),
 
                 TextColumn::make('total_score')
-                    ->label('Total')
+                    ->label('Total Nilai')
                     ->numeric(2)
                     ->weight('black')
                     ->color('success')
                     ->alignCenter(),
             ])
-            ->filters([
-                SelectFilter::make('status')
-                    ->options([
-                        0 => 'Belum Mulai',
-                        1 => 'Sedang Mengerjakan',
-                        2 => 'Menunggu Koreksi',
-                        3 => 'Selesai Final',
-                    ])
-            ])
             ->actions([
-                // TOMBOL KOREKSI TETAP SAMA
+                // 1. LIHAT LOG PELANGGARAN
+                Tables\Actions\Action::make('view_logs')
+                    ->label('Log')
+                    ->icon('heroicon-o-eye')
+                    ->color('warning')
+                    ->modalHeading('Kronologi Pelanggaran')
+                    ->modalWidth('lg')
+                    ->modalContent(fn(ExamSession $record) => view('filament.components.violation-logs', [
+                        'logs' => $record->violations
+                    ]))
+                    ->modalSubmitAction(false),
+
+                // 2. PEMULIHAN PESERTA (Reset Diskualifikasi)
+                Tables\Actions\Action::make('reset_violations')
+                    ->label('Pulihkan')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('success')
+                    ->requiresConfirmation()
+                    ->modalHeading('Pulihkan Sesi Ujian')
+                    ->modalDescription('Menghapus semua pelanggaran dan membatalkan diskualifikasi. Lanjutkan?')
+                    ->action(function (ExamSession $record) {
+                        $record->violations()->delete();
+                        $record->update([
+                            'is_disqualified' => false,
+                            'disqualification_reason' => null,
+                            'status' => 1,
+                        ]);
+                        Notification::make()->title('Peserta Berhasil Dipulihkan')->success()->send();
+                    })
+                    ->visible(fn(ExamSession $record) => $record->is_disqualified),
+
+                // 3. KOREKSI ESSAY
                 Tables\Actions\Action::make('grade_essay')
                     ->label('Koreksi')
                     ->icon('heroicon-o-pencil-square')
-                    ->color('warning')
-                    ->button() // Ubah jadi button agar lebih terlihat
-                    ->size('xs')
-                    ->visible(fn($record) => in_array($record->status, [2, 3]))
+                    ->color('info')
+                    ->visible(fn($record) => in_array($record->status, [2, 3]) && !$record->is_disqualified)
                     ->mountUsing(function (ComponentContainer $form, $record) {
-                        // ... (Logika mountUsing Anda tetap sama, copy paste di sini) ...
-                        // Saya singkat biar tidak kepanjangan
-                        $answers = $record->answers()
+                        $essays = $record->answers()
                             ->whereHas('question', fn($q) => $q->where('type', 'essay'))
                             ->with('question')
                             ->get()
@@ -139,29 +159,32 @@ class ExamSessionResource extends Resource
                                 'question_text' => $answer->question->content,
                                 'student_answer' => $answer->answer ?? '-',
                                 'question_weight' => $answer->question->weight ?? 0,
-                                'question_reference' => $answer->question->correct_answer,
                                 'score' => $answer->score,
                             ])->toArray();
-                        $form->fill(['essays' => $answers]);
+                        $form->fill(['essays' => $essays]);
                     })
                     ->form([
-                        // ... (Logika Form Repeater Anda tetap sama) ...
                         Repeater::make('essays')
-                            ->label('Koreksi Jawaban Essay')
+                            ->label('Daftar Jawaban Essay')
                             ->addable(false)
                             ->deletable(false)
                             ->schema([
                                 Placeholder::make('display')
                                     ->content(fn($get) => new HtmlString("
-                                    <div class='p-3 border rounded bg-gray-50 mb-2 text-sm'>
-                                        <b>Soal (Bobot: {$get('question_weight')})</b><br>{$get('question_text')}<br>
-                                        <div class='mt-2 bg-white p-2 border text-blue-900'><b>Jawab:</b> {$get('student_answer')}</div>
-                                    </div>
-                                ")),
+                                        <div class='p-4 border rounded-lg bg-gray-50 mb-2 shadow-sm'>
+                                            <div class='mb-2 text-gray-700 font-semibold'>Pertanyaan:</div>
+                                            <div class='mb-4 text-gray-600 italic'>{$get('question_text')}</div>
+                                            <div class='p-3 bg-blue-50 border-l-4 border-blue-500 rounded text-blue-900'>
+                                                <div class='text-xs uppercase font-bold mb-1'>Jawaban Peserta:</div>
+                                                <div class='text-md'>{$get('student_answer')}</div>
+                                            </div>
+                                            <div class='mt-2 text-right text-xs font-bold text-gray-500'>Bobot Soal: {$get('question_weight')}</div>
+                                        </div>
+                                    ")),
                                 Hidden::make('answer_id'),
                                 Hidden::make('question_weight'),
                                 Radio::make('grading_level')
-                                    ->label('Penilaian')
+                                    ->label('Beri Penilaian')
                                     ->inline()
                                     ->options(fn($get) => [
                                         '100' => 'Benar (' . $get('question_weight') . ')',
@@ -170,41 +193,39 @@ class ExamSessionResource extends Resource
                                     ])
                                     ->required()
                                     ->afterStateHydrated(function (Radio $component, $get) {
-                                        $s = $get('score');
-                                        $w = $get('question_weight');
-                                        if ($s !== null && $w > 0) {
+                                        $s = (float) $get('score');
+                                        $w = (float) $get('question_weight');
+                                        if ($w > 0) {
                                             $p = ($s / $w) * 100;
                                             $component->state($p >= 100 ? '100' : ($p >= 50 ? '50' : '0'));
                                         }
                                     })
                             ])
                     ])
-                    ->action(function (array $data, $record) {
-                        // ... (Logika Action Save Anda tetap sama) ...
+                    ->action(function (array $data, ExamSession $record) {
                         $totalEssay = 0;
                         foreach ($data['essays'] as $item) {
-                            $nilai = ((int)$item['grading_level'] / 100) * (int)$item['question_weight'];
-                            \App\Models\ExamAnswer::where('id', $item['answer_id'])->update(['score' => $nilai]);
+                            $nilai = ((float)$item['grading_level'] / 100) * (float)$item['question_weight'];
+                            ExamAnswer::where('id', $item['answer_id'])->update(['score' => $nilai]);
                             $totalEssay += $nilai;
                         }
+
                         $record->refresh();
-                        $nilaiPG = $record->score_tpa_aggregate ?? 0;
+                        $nilaiPG = (float) $record->score_tpa_aggregate;
+
                         $record->update([
                             'score_essay_aggregate' => $totalEssay,
                             'total_score' => $nilaiPG + $totalEssay,
                             'status' => 3
                         ]);
-                        Notification::make()->title('Nilai Disimpan')->success()->send();
+                        Notification::make()->title('Penilaian Disimpan')->success()->send();
                     }),
+                Tables\Actions\DeleteAction::make(),
             ]);
     }
 
     public static function getPages(): array
     {
         return ['index' => Pages\ListExamSessions::route('/')];
-    }
-    public static function getRelations(): array
-    {
-        return [];
     }
 }

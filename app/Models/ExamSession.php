@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ExamSession extends Model
 {
@@ -11,18 +12,27 @@ class ExamSession extends Model
     // Pastikan kolom ini masuk fillable agar bisa diupdate
     protected $fillable = [
         'candidate_id',
-        'exam_packet_id',
-        'status',
         'start_time',
         'end_time',
+        'status',
+        'is_disqualified',
+        'disqualification_reason',
         'total_score',
+        'score_english',
+        'score_prodi_1',
+        'score_prodi_2',
+        'exam_packet_id',
         'score_tpa_aggregate',   // Nilai Otomatis (Multiple Choice)
         'score_essay_aggregate', // Nilai Manual (Essay)
-        'tpa_score_details'      // JSON Rincian
+        'tpa_score_details',
+        'final_score_1',
+        'final_score_2',
+        // JSON Rincian
     ];
 
     protected $casts = [
         'tpa_score_details' => 'array',
+        'is_disqualified' => 'boolean',
         'start_time' => 'datetime',
         'end_time' => 'datetime',
     ];
@@ -70,5 +80,10 @@ class ExamSession extends Model
             self::STATUS_FINISHED => 'Selesai (Nilai Final)',
             default => 'Unknown',
         };
+    }
+
+    public function violations(): HasMany
+    {
+        return $this->hasMany(ExamViolation::class);
     }
 }
