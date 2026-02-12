@@ -65,34 +65,6 @@ class ExamReportResource extends Resource
                     ->icon('heroicon-o-table-cells')
                     ->color('success')
                     ->action(fn() => \Maatwebsite\Excel\Facades\Excel::download(new \App\Exports\ExamReportExport, 'Laporan_Nilai_Ujian.xlsx')),
-
-            Tables\Actions\Action::make('downloadPdf')
-                ->label('Download PDF')
-                ->icon('heroicon-o-document-arrow-down')
-                ->color('danger')
-
-                ->action(function () {
-                    // 1. Ambil data dengan relasi lengkap agar tidak N+1 query
-                    $strataData = \App\Models\Strata::with([
-                        'prodis.candidates.examSessions' => function ($q) {
-                            $q->where('status', 3)->where('is_disqualified', false);
-                        },
-                        'prodis.candidates.user'
-                    ])->get();
-
-                    // 2. Gunakan streamDownload agar lebih ringan
-                    return response()->streamDownload(
-                        function () use ($strataData) {
-                            $pdf = Pdf::loadView('pdf.exam-report', [
-                                'strataData' => $strataData
-                            ])->setPaper('a4', 'portrait')
-                                ->setOptions(['isHtml5ParserEnabled' => true, 'isRemoteEnabled' => true]);
-
-                            echo $pdf->output();
-                        },
-                        'Laporan-Nilai-' . now()->format('Y-m-d') . '.pdf'
-                    );
-                }),
             ]);
     }
 
